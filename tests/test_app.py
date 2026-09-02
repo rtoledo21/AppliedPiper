@@ -1,8 +1,8 @@
 """Tests for app.py's view layer.
 
-Per ADR 0006, this suite tests two things: that the app constructs without error, and that its initial state correctly
+Per ADR 0005, this suite tests two things: that the app constructs without error, and that its initial state correctly
 reflects its inputs. It does not test layout/appearance. Once piece 4 introduces button handlers with real logic, those
-get tested via .invoke() against a mocked controller function — see ADR 0006 for the pattern.
+get tested via .invoke() against a mocked controller function — see ADR 0005 for the pattern.
 
 Note: these construct real Tk() windows. You'll see windows flash open and close rapidly while this runs — that's
 expected, not a bug.

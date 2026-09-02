@@ -42,4 +42,4 @@ this project imports anything from the `piper` package directly.
 - Testing `tts.py` means mocking `subprocess.run` rather than mocking a
   Piper object — see [ADR 0003](0003-UnitTests.md).
 - This project's own code can be licensed independently of Piper's GPL
-  (see [ADR 0002](0002-MitLicense)).
+  (see [ADR 0002](0002-MitLicense.md)).
