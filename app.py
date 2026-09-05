@@ -7,14 +7,34 @@ voices.download_voice(), off the main thread so the window doesn't freeze during
 
 from __future__ import annotations
 
+import queue
+import tempfile
+import threading
 import tkinter as tk
-from pathlib import Path
-from tkinter import ttk
 
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from tts import PiperError, synthesize
 from voices import list_installed_voices
 
 VOICES_DIR = Path(__file__).resolve().parent / "voice_data"
 
+def perform_synthesis(
+    text: str,
+    voice: str,
+    voices_dir: Path,
+    output_path: Path,
+    synthesize_fn=synthesize,
+) -> None:
+    """GUI-level precondition check, then delegate to Piper.
+
+    Raises PiperError either for a GUI-specific precondition (no voice selected) or whatever synthesize_fn itself
+    raises. Deliberately plain — no Tkinter — so it's testable without constructing any widget. See ADR 0005 for why
+    this split exists.
+    """
+    if not voice:
+        raise PiperError("Pick a voice first — none is selected.")
+    synthesize_fn(text, voice, voices_dir, output_path)
 
 class App(tk.Tk):
     def __init__(self) -> None:
@@ -23,6 +43,7 @@ class App(tk.Tk):
         self.geometry("640x480")
         self.minsize(480, 360)
 
+        self._result_queue: queue.Queue = queue.Queue()
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -69,10 +90,10 @@ class App(tk.Tk):
         button_frame = ttk.Frame(self)
         button_frame.pack(fill="x", **pad)
 
-        self.play_button = ttk.Button(button_frame, text="▶ Play", command=self._not_wired_yet)
+        self.play_button = ttk.Button(button_frame, text="▶ Play", command=self._on_play_clicked)
         self.play_button.pack(side="left")
 
-        self.save_button = ttk.Button(button_frame, text="Save As…", command=self._not_wired_yet)
+        self.save_button = ttk.Button(button_frame, text="Save As…", command=self._on_save_clicked)
         self.save_button.pack(side="left", padx=(8, 0))
 
         # --- status bar ---------------------------------------------------
@@ -82,9 +103,74 @@ class App(tk.Tk):
         )
         status_bar.pack(fill="x", side="bottom")
 
+    def _on_play_clicked(self) -> None:
+        text = self.text_widget.get("1.0", "end")
+        voice = self.voice_var.get()
+        output_path = Path(tempfile.gettempdir()) / "appliedpiper_play.wav"
+        self._run_synthesis(text, voice, output_path, on_success_message=f"Synthesized to {output_path}")
+
+    def _on_save_clicked(self) -> None:
+        dest = filedialog.asksaveasfilename(
+            defaultextension=".wav", filetypes=[("WAV audio", "*.wav")]
+        )
+        if not dest:
+            return
+        text = self.text_widget.get("1.0", "end")
+        voice = self.voice_var.get()
+        output_path = Path(dest)
+        self._run_synthesis(text, voice, output_path, on_success_message=f"Saved to {output_path}")
+
+    def _run_synthesis(self, text: str, voice: str, output_path: Path, on_success_message: str) -> None:
+        self.play_button.configure(state="disabled")
+        self.save_button.configure(state="disabled")
+        self.status_var.set("Synthesizing…")
+
+        def worker() -> None:
+            # Do NOT touch self.after / any widget / any StringVar from here — this runs on a
+            # background thread, and calling into Tk cross-thread is unreliable on some Tcl/Tk
+            # builds (confirmed: it silently never fired on macOS Aqua Tk). Only ever hand data
+            # to the plain, non-Tk queue below; the main thread does all the Tk work. See ADR 0006.
+            try:
+                perform_synthesis(text, voice, VOICES_DIR, output_path)
+            except PiperError as exc:
+                self._result_queue.put(("error", exc))
+            else:
+                self._result_queue.put(("done", on_success_message))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(50, self._poll_result_queue)
+
+    def _poll_result_queue(self) -> None:
+        """Runs only on the main thread, on its own self-rescheduled timer.
+
+        This is the only place that reacts to the worker thread finishing. Because it's driven
+        by self.after() called from the main thread (never from worker()), it never depends on
+        cross-thread Tcl event delivery — it just checks a plain queue every 50ms.
+        """
+        try:
+            kind, payload = self._result_queue.get_nowait()
+        except queue.Empty:
+            self.after(50, self._poll_result_queue)
+            return
+
+        if kind == "done":
+            self._on_synthesis_done(payload)
+        else:
+            self._on_synthesis_error(payload)
+
+    def _on_synthesis_done(self, message: str) -> None:
+        self.status_var.set(message)
+        self.play_button.configure(state="normal")
+        self.save_button.configure(state="normal")
+
+    def _on_synthesis_error(self, exc: PiperError) -> None:
+        self.status_var.set("Error — see dialog.")
+        self.play_button.configure(state="normal")
+        self.save_button.configure(state="normal")
+        messagebox.showerror("Synthesis failed", str(exc))
+
     def _not_wired_yet(self) -> None:
         self.status_var.set("Not wired up yet — that's the next piece.")
-
 
 def main() -> int:
     App().mainloop()

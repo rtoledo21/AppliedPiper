@@ -13,7 +13,7 @@ which does the actual neural speech synthesis.
 |---|---|
 | `tts.py` | Wraps the Piper CLI: validates input, builds the subprocess command, translates Piper's failures into a single `PiperError` type. This is the only module that knows Piper exists. |
 | `voices.py` | Lists which voices are already downloaded (`list_installed_voices`) and downloads new ones (`download_voice`), both by shelling out to Piper's CLI. Reuses `tts.PiperError` rather than defining its own — see [ADR 0001](decisions/0001-ShellOutToPiperCli.md). |
-| `app.py` | Tkinter GUI shell — window layout and widgets, not yet wired to `tts.py`/`voices.py`. Tested at the view/controller seam per [ADR 0005](decisions/0005-GUITests.md), not for layout/appearance. |
+| `app.py` | Tkinter GUI, wired to `tts.py` via `perform_synthesis()`. Synthesis runs on a background thread; the result comes back to the main thread through a `queue.Queue`, never a direct cross-thread Tk call — see [ADR 0006](decisions/0006-BackgroundThreadCommunication.md). Tested at the view/controller seam per [ADR 0005](decisions/0005-GUITests.md), not for layout/appearance. |
 
 *(This table grows as each subsequent piece — wiring, playback — is
 added. See `decisions/` for the reasoning behind each one.)*
@@ -57,3 +57,9 @@ added. See `decisions/` for the reasoning behind each one.)*
   `subprocess.run` is mocked in every test for `tts.py`/`voices.py` — see
   [ADR 0003](decisions/0003-UnitTests.md). GUI tests use real `Tk()`
   widgets but no real synthesis — see [ADR 0005](decisions/0005-GUITests.md).
+- **Background threads never touch Tkinter.** A `threading.Thread` target
+  may do real work and call plain Python objects, but reports back only
+  through a `queue.Queue` that the main thread polls on its own timer —
+  calling `self.after()` or a widget/`StringVar` directly from another
+  thread is unreliable on some Tcl/Tk builds (confirmed on macOS Aqua Tk;
+  see [ADR 0006](decisions/0006-BackgroundThreadCommunication.md)).
