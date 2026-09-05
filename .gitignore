@@ -11,6 +11,9 @@ venv/
 # Voice model files (large binaries, downloaded on demand)
 voice_data/
 
+# Synthesized audio output
+output/
+
 # Generated audio output
 *.wav
 

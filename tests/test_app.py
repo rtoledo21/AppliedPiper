@@ -13,7 +13,7 @@ import time
 
 from unittest.mock import Mock
 
-from app import App, perform_synthesis
+from app import App, perform_synthesis, reveal_in_file_manager
 from tts import PiperError
 
 
@@ -107,5 +107,112 @@ def test_play_button_success_updates_status_via_background_thread(monkeypatch, t
 
         assert instance.status_var.get().startswith("Synthesized")
         assert str(instance.play_button["state"]) == "normal"
+    finally:
+        instance.destroy()
+
+
+# --- reveal_in_file_manager: a plain, Tkinter-free function (same MVC split as
+# perform_synthesis, per ADR 0005) that shells out to the OS's file manager. ---
+
+def test_reveal_in_file_manager_uses_open_dash_r_on_macos(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.platform.system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr("app.subprocess.run", lambda cmd, **kwargs: calls.append(cmd))
+    target = tmp_path / "play.wav"
+    reveal_in_file_manager(target)
+    assert calls == [["open", "-R", str(target)]]
+
+
+def test_reveal_in_file_manager_uses_explorer_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.platform.system", lambda: "Windows")
+    calls = []
+    monkeypatch.setattr("app.subprocess.run", lambda cmd, **kwargs: calls.append(cmd))
+    target = tmp_path / "play.wav"
+    reveal_in_file_manager(target)
+    assert calls == [["explorer", "/select,", str(target)]]
+
+
+def test_reveal_in_file_manager_uses_xdg_open_on_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.platform.system", lambda: "Linux")
+    calls = []
+    monkeypatch.setattr("app.subprocess.run", lambda cmd, **kwargs: calls.append(cmd))
+    target = tmp_path / "play.wav"
+    reveal_in_file_manager(target)
+    assert calls == [["xdg-open", str(target.parent)]]
+
+
+def test_reveal_in_file_manager_swallows_missing_command(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.platform.system", lambda: "Darwin")
+
+    def raise_not_found(cmd, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr("app.subprocess.run", raise_not_found)
+    # Must not raise: revealing a file is a convenience, not something that should
+    # crash synthesis if `open`/`explorer`/`xdg-open` isn't on PATH for some reason.
+    reveal_in_file_manager(tmp_path / "play.wav")
+
+
+# --- GUI integration: Play's fixed output location + the reveal button. ---
+
+def test_reveal_button_starts_disabled(app):
+    assert str(app.reveal_button["state"]) == "disabled"
+
+
+def test_play_writes_to_fixed_output_dir_and_enables_reveal(monkeypatch, tmp_path):
+    (tmp_path / "en_US-lessac-medium.onnx").touch()
+    monkeypatch.setattr("app.VOICES_DIR", tmp_path)
+    output_dir = tmp_path / "out"
+    monkeypatch.setattr("app.OUTPUT_DIR", output_dir)
+
+    captured = {}
+
+    def fake_perform_synthesis(text, voice, voices_dir, output_path):
+        captured["output_path"] = output_path
+
+    monkeypatch.setattr("app.perform_synthesis", fake_perform_synthesis)
+
+    instance = App()
+    try:
+        instance.text_widget.insert("1.0", "hello")
+        instance.voice_var.set("en_US-lessac-medium")
+        instance.play_button.invoke()
+
+        for _ in range(50):
+            instance.update()
+            if instance.status_var.get().startswith("Synthesized"):
+                break
+            time.sleep(0.02)
+
+        assert captured["output_path"] == output_dir / "play.wav"
+        assert instance._last_output_path == output_dir / "play.wav"
+        assert str(instance.reveal_button["state"]) == "normal"
+    finally:
+        instance.destroy()
+
+
+def test_reveal_button_click_calls_reveal_with_last_output_path(monkeypatch, tmp_path):
+    (tmp_path / "en_US-lessac-medium.onnx").touch()
+    monkeypatch.setattr("app.VOICES_DIR", tmp_path)
+    monkeypatch.setattr("app.OUTPUT_DIR", tmp_path / "out")
+    monkeypatch.setattr("app.perform_synthesis", lambda *a, **k: None)
+
+    revealed = []
+    monkeypatch.setattr("app.reveal_in_file_manager", lambda p: revealed.append(p))
+
+    instance = App()
+    try:
+        instance.text_widget.insert("1.0", "hello")
+        instance.voice_var.set("en_US-lessac-medium")
+        instance.play_button.invoke()
+
+        for _ in range(50):
+            instance.update()
+            if str(instance.reveal_button["state"]) == "normal":
+                break
+            time.sleep(0.02)
+
+        instance.reveal_button.invoke()
+        assert revealed == [tmp_path / "out" / "play.wav"]
     finally:
         instance.destroy()

@@ -7,7 +7,9 @@ voices.download_voice(), off the main thread so the window doesn't freeze during
 
 from __future__ import annotations
 
+import platform
 import queue
+import subprocess
 import tempfile
 import threading
 import tkinter as tk
@@ -18,6 +20,7 @@ from tts import PiperError, synthesize
 from voices import list_installed_voices
 
 VOICES_DIR = Path(__file__).resolve().parent / "voice_data"
+OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 def perform_synthesis(
     text: str,
@@ -36,6 +39,25 @@ def perform_synthesis(
         raise PiperError("Pick a voice first — none is selected.")
     synthesize_fn(text, voice, voices_dir, output_path)
 
+def reveal_in_file_manager(path: Path) -> None:
+    """Open the OS file manager with `path` selected/highlighted, best-effort.
+
+    Revealing a file is a convenience, not something synthesis should ever fail over —
+    if the underlying command isn't available on this platform/PATH, this quietly does
+    nothing rather than raising. Plain function, no Tkinter, same reasoning as
+    perform_synthesis (see ADR 0005): testable without constructing any widget.
+    """
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            subprocess.run(["open", "-R", str(path)])
+        elif system == "Windows":
+            subprocess.run(["explorer", "/select,", str(path)])
+        else:
+            subprocess.run(["xdg-open", str(path.parent)])
+    except FileNotFoundError:
+        pass
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -44,6 +66,7 @@ class App(tk.Tk):
         self.minsize(480, 360)
 
         self._result_queue: queue.Queue = queue.Queue()
+        self._last_output_path: Path | None = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -96,6 +119,11 @@ class App(tk.Tk):
         self.save_button = ttk.Button(button_frame, text="Save As…", command=self._on_save_clicked)
         self.save_button.pack(side="left", padx=(8, 0))
 
+        self.reveal_button = ttk.Button(
+            button_frame, text="Show in Finder", command=self._on_reveal_clicked, state="disabled"
+        )
+        self.reveal_button.pack(side="left", padx=(8, 0))
+
         # --- status bar ---------------------------------------------------
         self.status_var = tk.StringVar(value="Layout only — nothing is wired up yet.")
         status_bar = ttk.Label(
@@ -106,7 +134,7 @@ class App(tk.Tk):
     def _on_play_clicked(self) -> None:
         text = self.text_widget.get("1.0", "end")
         voice = self.voice_var.get()
-        output_path = Path(tempfile.gettempdir()) / "appliedpiper_play.wav"
+        output_path = OUTPUT_DIR / "play.wav"
         self._run_synthesis(text, voice, output_path, on_success_message=f"Synthesized to {output_path}")
 
     def _on_save_clicked(self) -> None:
@@ -133,9 +161,9 @@ class App(tk.Tk):
             try:
                 perform_synthesis(text, voice, VOICES_DIR, output_path)
             except PiperError as exc:
-                self._result_queue.put(("error", exc))
+                self._result_queue.put(("error", exc, None))
             else:
-                self._result_queue.put(("done", on_success_message))
+                self._result_queue.put(("done", on_success_message, output_path))
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(50, self._poll_result_queue)
@@ -148,26 +176,32 @@ class App(tk.Tk):
         cross-thread Tcl event delivery — it just checks a plain queue every 50ms.
         """
         try:
-            kind, payload = self._result_queue.get_nowait()
+            kind, payload, output_path = self._result_queue.get_nowait()
         except queue.Empty:
             self.after(50, self._poll_result_queue)
             return
 
         if kind == "done":
-            self._on_synthesis_done(payload)
+            self._on_synthesis_done(payload, output_path)
         else:
             self._on_synthesis_error(payload)
 
-    def _on_synthesis_done(self, message: str) -> None:
+    def _on_synthesis_done(self, message: str, output_path: Path) -> None:
         self.status_var.set(message)
         self.play_button.configure(state="normal")
         self.save_button.configure(state="normal")
+        self._last_output_path = output_path
+        self.reveal_button.configure(state="normal")
 
     def _on_synthesis_error(self, exc: PiperError) -> None:
         self.status_var.set("Error — see dialog.")
         self.play_button.configure(state="normal")
         self.save_button.configure(state="normal")
         messagebox.showerror("Synthesis failed", str(exc))
+
+    def _on_reveal_clicked(self) -> None:
+        if self._last_output_path is not None:
+            reveal_in_file_manager(self._last_output_path)
 
     def _not_wired_yet(self) -> None:
         self.status_var.set("Not wired up yet — that's the next piece.")
