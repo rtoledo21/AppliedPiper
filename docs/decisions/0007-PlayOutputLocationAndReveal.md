@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0008](0008-IncrementalPlayFilenames.md) for the "always overwrite `play.wav`" part of this decision. The fixed `output/` directory and the reveal-button design described below are still in effect.
 
 ## Context
 

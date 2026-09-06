@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import platform
 import queue
+import re
 import subprocess
-import tempfile
 import threading
 import tkinter as tk
 
@@ -21,6 +21,26 @@ from voices import list_installed_voices
 
 VOICES_DIR = Path(__file__).resolve().parent / "voice_data"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+
+_PLAY_FILE_PATTERN = re.compile(r"^play_(\d+)\.wav$")
+
+
+def next_play_output_path(output_dir: Path) -> Path:
+    """Pick the next play_N.wav path in `output_dir`, one higher than any that already exist.
+
+    Scanning the directory (rather than keeping an in-memory counter) means this stays correct
+    across app restarts and self-heals if files are deleted by hand — there's no persisted
+    counter state that can go stale or collide with what's actually on disk. See ADR 0008.
+    """
+    existing_numbers = []
+    if output_dir.exists():
+        for entry in output_dir.iterdir():
+            match = _PLAY_FILE_PATTERN.match(entry.name)
+            if match:
+                existing_numbers.append(int(match.group(1)))
+    next_number = max(existing_numbers, default=0) + 1
+    return output_dir / f"play_{next_number}.wav"
+
 
 def perform_synthesis(
     text: str,
@@ -134,7 +154,7 @@ class App(tk.Tk):
     def _on_play_clicked(self) -> None:
         text = self.text_widget.get("1.0", "end")
         voice = self.voice_var.get()
-        output_path = OUTPUT_DIR / "play.wav"
+        output_path = next_play_output_path(OUTPUT_DIR)
         self._run_synthesis(text, voice, output_path, on_success_message=f"Synthesized to {output_path}")
 
     def _on_save_clicked(self) -> None:

@@ -11,9 +11,9 @@ which does the actual neural speech synthesis.
 
 | Module | Responsibility |
 |---|---|
-| `tts.py` | Wraps the Piper CLI: validates input, builds the subprocess command, translates Piper's failures into a single `PiperError` type. This is the only module that knows Piper exists. |
+| `tts.py` | Wraps the Piper CLI: validates input, builds the subprocess command, translates Piper's failures into a single `PiperError` type. This is the only module that knows Piper exists. `synthesize()` also parses inline `[pause:N]` markers, synthesizing around them and splicing in real silence via the `wave` module — see [ADR 0009](decisions/0009-InlinePauseMarkers.md). |
 | `voices.py` | Lists which voices are already downloaded (`list_installed_voices`) and downloads new ones (`download_voice`), both by shelling out to Piper's CLI. Reuses `tts.PiperError` rather than defining its own — see [ADR 0001](decisions/0001-ShellOutToPiperCli.md). |
-| `app.py` | Tkinter GUI, wired to `tts.py` via `perform_synthesis()`. Synthesis runs on a background thread; the result comes back to the main thread through a `queue.Queue`, never a direct cross-thread Tk call — see [ADR 0006](decisions/0006-BackgroundThreadCommunication.md). Play writes to a fixed `output/play.wav`; a "Show in Finder" button reveals the last Play/Save output via `reveal_in_file_manager()` — see [ADR 0007](decisions/0007-PlayOutputLocationAndReveal.md). Tested at the view/controller seam per [ADR 0005](decisions/0005-GUITests.md), not for layout/appearance. |
+| `app.py` | Tkinter GUI, wired to `tts.py` via `perform_synthesis()`. Synthesis runs on a background thread; the result comes back to the main thread through a `queue.Queue`, never a direct cross-thread Tk call — see [ADR 0006](decisions/0006-BackgroundThreadCommunication.md). Each Play writes to a new, incrementally-numbered `output/play_N.wav` via `next_play_output_path()` — see [ADR 0008](decisions/0008-IncrementalPlayFilenames.md) — and a "Show in Finder" button reveals the last Play/Save output via `reveal_in_file_manager()` — see [ADR 0007](decisions/0007-PlayOutputLocationAndReveal.md). Tested at the view/controller seam per [ADR 0005](decisions/0005-GUITests.md), not for layout/appearance. |
 
 *(This table grows as each subsequent piece — wiring, playback — is
 added. See `decisions/` for the reasoning behind each one.)*
@@ -21,9 +21,14 @@ added. See `decisions/` for the reasoning behind each one.)*
 ## Data flow (current)
 
 1. Caller provides text, a voice id, a voices directory, and an output path.
-2. `tts.synthesize()` validates both inputs before doing anything else —
-   fail fast, with a message we control rather than one Piper produces.
-3. It shells out to `python -m piper` as a separate process (see
+2. `tts.synthesize()` first checks the text for inline `[pause:N]` markers
+   (`parse_pause_markers()`). Text with none behaves exactly like step 3
+   below, as a single Piper call. Text with markers is split around them,
+   each surrounding chunk synthesized separately into a temp file, and the
+   results spliced together with real silence via the `wave` module — see
+   [ADR 0009](decisions/0009-InlinePauseMarkers.md).
+3. Each chunk (or the whole text, if there are no markers) shells out to
+   `python -m piper` as a separate process (see
    [ADR 0001](decisions/0001-ShellOutToPiperCli.md) for why) and
    waits for it to finish.
 4. On success, a WAV file exists at the output path. On any failure, a
@@ -39,12 +44,13 @@ added. See `decisions/` for the reasoning behind each one.)*
   since that collides with the `voices.py` module (see
   [ADR 0004](decisions/0004-VoiceDataNaming.md)). This directory is
   gitignored; voices are re-downloaded per machine.
-- Play's synthesized audio always lands at `output/play.wav` at the
-  project root — a fixed, overwritten-each-time file rather than an OS
-  temp path, so it's easy to find by hand and there's nothing to
-  accumulate or clean up (see
-  [ADR 0007](decisions/0007-PlayOutputLocationAndReveal.md)). Also
-  gitignored.
+- Play's synthesized audio lands in `output/` at the project root as
+  `play_1.wav`, `play_2.wav`, ... — a fixed, gitignored directory rather
+  than an OS temp path, so it's easy to find by hand (see
+  [ADR 0007](decisions/0007-PlayOutputLocationAndReveal.md)). Each Play
+  gets its own incrementally-numbered file rather than overwriting the
+  last one, and nothing prunes old ones automatically (see
+  [ADR 0008](decisions/0008-IncrementalPlayFilenames.md)).
 
 ## Design principles this codebase follows
 
@@ -74,3 +80,9 @@ added. See `decisions/` for the reasoning behind each one.)*
   raising, because failing to open Finder should never look like failing
   to synthesize speech — see
   [ADR 0007](decisions/0007-PlayOutputLocationAndReveal.md).
+- **Assumptions about external data are checked, not trusted.**
+  Splicing silence into Piper's output assumes 16-bit PCM WAV (true for
+  every Piper voice today); `tts.py` verifies this before writing raw
+  silence bytes and raises `PiperError` rather than producing corrupt
+  audio if that's ever not true — see
+  [ADR 0009](decisions/0009-InlinePauseMarkers.md).

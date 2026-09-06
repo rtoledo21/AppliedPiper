@@ -13,7 +13,7 @@ import time
 
 from unittest.mock import Mock
 
-from app import App, perform_synthesis, reveal_in_file_manager
+from app import App, perform_synthesis, reveal_in_file_manager, next_play_output_path
 from tts import PiperError
 
 
@@ -159,11 +159,40 @@ def test_reveal_button_starts_disabled(app):
     assert str(app.reveal_button["state"]) == "disabled"
 
 
-def test_play_writes_to_fixed_output_dir_and_enables_reveal(monkeypatch, tmp_path):
+# --- next_play_output_path: plain, Tkinter-free, per ADR 0008. ---
+
+def test_next_play_output_path_returns_play_1_for_missing_dir(tmp_path):
+    missing_dir = tmp_path / "does_not_exist_yet"
+    assert next_play_output_path(missing_dir) == missing_dir / "play_1.wav"
+
+
+def test_next_play_output_path_returns_play_1_for_empty_dir(tmp_path):
+    assert next_play_output_path(tmp_path) == tmp_path / "play_1.wav"
+
+
+def test_next_play_output_path_increments_past_highest_existing_number(tmp_path):
+    (tmp_path / "play_1.wav").touch()
+    (tmp_path / "play_2.wav").touch()
+    (tmp_path / "play_7.wav").touch()
+    assert next_play_output_path(tmp_path) == tmp_path / "play_8.wav"
+
+
+def test_next_play_output_path_ignores_unrelated_filenames(tmp_path):
+    (tmp_path / "play_3.wav").touch()
+    (tmp_path / "notes.txt").touch()
+    (tmp_path / "play_x.wav").touch()  # non-numeric -- must not match
+    (tmp_path / "saved.wav").touch()   # different prefix -- must not match
+    assert next_play_output_path(tmp_path) == tmp_path / "play_4.wav"
+
+
+# --- GUI integration: Play now delegates path selection to next_play_output_path. ---
+
+def test_play_uses_next_play_output_path_and_enables_reveal(monkeypatch, tmp_path):
     (tmp_path / "en_US-lessac-medium.onnx").touch()
     monkeypatch.setattr("app.VOICES_DIR", tmp_path)
-    output_dir = tmp_path / "out"
-    monkeypatch.setattr("app.OUTPUT_DIR", output_dir)
+
+    expected_path = tmp_path / "out" / "play_3.wav"
+    monkeypatch.setattr("app.next_play_output_path", lambda output_dir: expected_path)
 
     captured = {}
 
@@ -184,8 +213,8 @@ def test_play_writes_to_fixed_output_dir_and_enables_reveal(monkeypatch, tmp_pat
                 break
             time.sleep(0.02)
 
-        assert captured["output_path"] == output_dir / "play.wav"
-        assert instance._last_output_path == output_dir / "play.wav"
+        assert captured["output_path"] == expected_path
+        assert instance._last_output_path == expected_path
         assert str(instance.reveal_button["state"]) == "normal"
     finally:
         instance.destroy()
@@ -213,6 +242,6 @@ def test_reveal_button_click_calls_reveal_with_last_output_path(monkeypatch, tmp
             time.sleep(0.02)
 
         instance.reveal_button.invoke()
-        assert revealed == [tmp_path / "out" / "play.wav"]
+        assert revealed == [tmp_path / "out" / "play_1.wav"]
     finally:
         instance.destroy()
